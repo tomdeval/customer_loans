@@ -68,16 +68,29 @@ class DataFrameInfo:
         print(null_summary)
         print("\n")
 
-    def identify_skewed_columns(self, threshold=0):
+    def zero_or_blank_percentage(self):
+        "Prints the percentage of zero or blank values in each column"
+        total_rows = len(self.df)
+        zero_percent = (self.df == 0).sum() / total_rows * 100
+        blank_percent = (self.df.applymap(lambda x: isinstance(x, str) and x.strip() == '')).sum() / total_rows * 100
+        combined_percent = zero_percent + blank_percent
+        filtered_percent = combined_percent[combined_percent > 0]
+        print("Percentage of Zero or Blank Values in Each Column:")
+        for col, percent in filtered_percent.items():
+            print(f" - {col}: {percent:.2f}%")
+
+    def identify_skewed_columns(self, threshold=0, zero_threshold=0.4):
         "Identify columns that have a skewness greater than the given threshold."
         skewness = self.df.skew(numeric_only=True)
+        # Compute the percentage of zero values in each column
+        zero_percent = (self.df == 0).sum() / len(self.df)
         skewed_cols = skewness[abs(skewness) > threshold]
+        skewed_cols = skewed_cols[zero_percent[skewed_cols.index] <= zero_threshold]
         skewed_dict = skewed_cols.to_dict()
-        print(f"Skewed Columns (>|{threshold}| skewness):")
+        print(f"Skewed Columns (>|{threshold}| skewness, excluding >{zero_threshold*100}% zeros):")
         for col, skew_value in skewed_dict.items():
             print(f" - {col}: {skew_value:.3f}")
 
-       
 class Plotter:
     def __init__(self, df):
         self.df = df
@@ -103,11 +116,15 @@ class Plotter:
         plt.show()
         
     def plot_skew(self, threshold=1, exclude_cols=None):
+        if exclude_cols is None:
+            exclude_cols = []
         skewness = self.df.skew(numeric_only=True)
         skewed_cols = skewness[abs(skewness) > threshold].index.tolist()
-        skewed_cols = [col for col in skewed_cols if col not in exclude_cols]
+        zero_percent = (self.df == 0).sum() / len(self.df) * 100
+        high_zero_cols = zero_percent[zero_percent > 40].index.tolist()
+        filtered_cols = [col for col in skewed_cols if col not in exclude_cols and col not in high_zero_cols]
         "Plot histograms of skewed columns to analyze distribution."
-        for col in skewed_cols:
+        for col in filtered_cols:
             plt.figure(figsize=(10, 4))
 
             # Histogram
@@ -115,13 +132,21 @@ class Plotter:
             sns.histplot(self.df[col], kde=True, bins=30)
             plt.title(f"Histogram of {col}")
 
-    def plot_outliers(self, numeric_cols):
+    def plot_outliers(self, numeric_cols, zero_threshold=40):
+        # Calculate percentage of zero values in each column
+        zero_percent = (self.df[numeric_cols] == 0).sum() / len(self.df) * 100
+        valid_cols = [col for col in numeric_cols if zero_percent[col] <= zero_threshold]
+        
         "Plots box plots to visualize outliers in numeric columns."
-        plt.figure(figsize=(15, 5 * len(numeric_cols)))
+        if not valid_cols:
+            print(f"All numeric columns exceed {zero_threshold}% zero values and are excluded.")
+            return
+
+        plt.figure(figsize=(15, 5 * len(valid_cols)))
         
         # Box Plots
-        for i, col in enumerate(numeric_cols):
-            plt.subplot(len(numeric_cols), 1, i + 1)
+        for i, col in enumerate(valid_cols):
+            plt.subplot(len(valid_cols), 1, i + 1)
             sns.boxplot(data=self.df[col])
             plt.title(f"Box Plot of {col}")
             plt.xticks(rotation=90)
@@ -198,7 +223,7 @@ class DataFrameTransform:
                 print(f"Applied {best_transformation} transformation to {col}. Skewness after: {self.df[col].skew()}")
         print("\n")
     
-    def handle_outliers(self, method="remove", threshold=1.5):
+    def handle_outliers(self, method="remove", threshold=1.5, zero_threshold=40):
             """
             Detects and handles outliers in numeric columns.
             method = "remove" → Removes outliers using the IQR method.
@@ -207,7 +232,11 @@ class DataFrameTransform:
             numeric_cols = self.df.select_dtypes(include=[np.number]).columns
             numeric_cols = [col for col in numeric_cols if col not in ['id', 'member_id']]
 
-            for col in numeric_cols:
+            # Calculate zero percentage per column
+            zero_percent = (self.df[numeric_cols] == 0).sum() / len(self.df) * 100
+            valid_cols = [col for col in numeric_cols if zero_percent[col] <= zero_threshold]
+           
+            for col in valid_cols:
                 Q1 = self.df[col].quantile(0.25)
                 Q3 = self.df[col].quantile(0.75)
                 IQR = Q3 - Q1
@@ -221,7 +250,7 @@ class DataFrameTransform:
                 elif method == "winsorize":
                     self.df[col] = winsorize(self.df[col], limits=[0.05, 0.05])  # Winsorize 5% from both ends
                     print(f"Winsorized outliers in {col}.")
-    
+
     def identify_highly_correlated_columns(self, threshold=0.85):
         "Identifies columns that are highly correlated (above a given threshold)."
         correlation_matrix = self.df.corr(numeric_only=True).abs()
@@ -236,3 +265,84 @@ class DataFrameTransform:
         cols_to_remove = self.identify_highly_correlated_columns(threshold)
         self.df.drop(columns=cols_to_remove, inplace=True)
         print(f"Removed columns: {cols_to_remove}")
+
+    def replot_outliers(self, numeric_cols, zero_threshold=40):
+        # Calculate percentage of zero values in each column
+        zero_percent = (self.df[numeric_cols] == 0).sum() / len(self.df) * 100
+        valid_cols = [col for col in numeric_cols if zero_percent[col] <= zero_threshold]
+        
+        "Plots box plots to visualize outliers in numeric columns."
+        if not valid_cols:
+            print(f"All numeric columns exceed {zero_threshold}% zero values and are excluded.")
+            return
+
+        plt.figure(figsize=(15, 5 * len(valid_cols)))
+        
+        # Box Plots
+        for i, col in enumerate(valid_cols):
+            plt.subplot(len(valid_cols), 1, i + 1)
+            sns.boxplot(data=self.df[col])
+            plt.title(f"Box Plot of {col}")
+            plt.xticks(rotation=90)
+        
+        plt.tight_layout()
+        plt.show()
+
+class LossIndicators:
+    def __init__(self, df):
+        self.df = df
+
+    def filter_defaulted_loans(self):
+        "Creates a subset of loans that are either 'Charged Off' or at risk."
+        default_status = ["Charged Off", "Late (31-120 days)", "Late (16-30 days)"]
+        return self.df[self.df["loan_status"].isin(default_status)].copy()
+
+    def compare_loan_grade(self, df_filtered):
+        "Compares loan grades between charged-off loans and at-risk loans."
+        plt.figure(figsize=(10, 5))
+        sns.countplot(data=df_filtered, x="grade", hue="loan_status", order=sorted(df_filtered["grade"].unique()))
+        plt.title("Loan Grade Distribution Among Defaulted Loans")
+        plt.xlabel("Loan Grade")
+        plt.ylabel("Count")
+        plt.legend(title="Loan Status")
+        plt.show()
+
+    def compare_purpose(self, df_filtered):
+        "Compares loan purposes between charged-off loans and at-risk loans."
+        plt.figure(figsize=(12, 6))
+        order = df_filtered["purpose"].value_counts().index
+        sns.countplot(data=df_filtered, y="purpose", hue="loan_status", order=order)
+        plt.title("Loan Purpose Distribution Among Defaulted Loans")
+        plt.xlabel("Count")
+        plt.ylabel("Loan Purpose")
+        plt.legend(title="Loan Status")
+        plt.show()
+
+    def compare_home_ownership(self, df_filtered):
+        "Compares home ownership status between charged-off loans and at-risk loans."
+        plt.figure(figsize=(8, 4))
+        sns.countplot(data=df_filtered, x="home_ownership", hue="loan_status")
+        plt.title("Home Ownership vs Loan Defaults")
+        plt.xlabel("Home Ownership")
+        plt.ylabel("Count")
+        plt.legend(title="Loan Status")
+        plt.show()
+
+    def analyze_dti(self, df_filtered):
+        "Visualizes Debt-to-Income ratio (DTI) among defaulted loans."
+        plt.figure(figsize=(10, 5))
+        sns.boxplot(data=df_filtered, x="loan_status", y="dti")
+        plt.title("Debt-to-Income Ratio Distribution Among Defaulted Loans")
+        plt.xlabel("Loan Status")
+        plt.ylabel("DTI Ratio")
+        plt.show()
+
+    def run_analysis(self):
+        "Runs the full analysis pipeline."
+        df_filtered = self.filter_defaulted_loans()
+        print(f"Filtered {len(df_filtered)} loans that are either charged off or at risk.")
+
+        self.compare_loan_grade(df_filtered)
+        self.compare_purpose(df_filtered)
+        self.compare_home_ownership(df_filtered)
+        self.analyze_dti(df_filtered)
